@@ -175,8 +175,9 @@ function Read-NewLines {
             $fs.Dispose()
         }
     }
-    catch {
-        # 読み取り失敗時は空を返す(常駐は継続)
+ catch {
+        # 一時的にエラー内容を表示(原因切り分け用)
+        [System.Windows.Forms.MessageBox]::Show("読み取り失敗: $($_.Exception.Message)","DEBUG","OK","Error") | Out-Null
         return @()
     }
     return $lines
