@@ -11,6 +11,7 @@
     - アクティブシート切替を検知したら書き込み位置を開始セルにリセット
     - ログの文字コードは Shift-JIS
     - グローバルホットキー(Ctrl+Alt+L)で ON/OFF をトグル(アプリ非アクティブでも有効)
+    - ［半角数字］で始まる行を無視するモード
 
 .NOTES
     実行環境: Windows + Excel インストール済み / PowerShell
@@ -175,9 +176,8 @@ function Read-NewLines {
             $fs.Dispose()
         }
     }
- catch {
-        # 一時的にエラー内容を表示(原因切り分け用)
-        [System.Windows.Forms.MessageBox]::Show("読み取り失敗: $($_.Exception.Message)","DEBUG","OK","Error") | Out-Null
+    catch {
+        # 読み取り失敗時は空を返す(常駐は継続)
         return @()
     }
     return $lines
@@ -223,8 +223,14 @@ function Invoke-Poll {
 
     $newLines = Read-NewLines -path $path
     if ($newLines.Count -gt 0) {
-        Write-LinesToExcel -lines $newLines
-        Update-Status
+        # ［半角数字］で始まる行を無視するモード(先頭のタブ/空白は許容)
+        if ($chkIgnore.Checked) {
+            $newLines = @($newLines | Where-Object { $_ -notmatch '^\s*\[[0-9]+\]' })
+        }
+        if ($newLines.Count -gt 0) {
+            Write-LinesToExcel -lines $newLines
+            Update-Status
+        }
     }
 }
 
@@ -247,7 +253,7 @@ function Update-Status {
 # =====================================================================
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "ログ自動転記ツール"
-$form.Size = New-Object System.Drawing.Size(560, 320)
+$form.Size = New-Object System.Drawing.Size(560, 360)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
@@ -310,10 +316,18 @@ $lblCellHint.Size = New-Object System.Drawing.Size(300, 22)
 $lblCellHint.ForeColor = [System.Drawing.Color]::Gray
 $form.Controls.Add($lblCellHint)
 
+# --- ［半角数字］始まり行を無視するモード ---
+$chkIgnore = New-Object System.Windows.Forms.CheckBox
+$chkIgnore.Text = "［半角数字］で始まる行を無視する (先頭のタブ/空白は許容)"
+$chkIgnore.Location = New-Object System.Drawing.Point(20, 128)
+$chkIgnore.Size = New-Object System.Drawing.Size(505, 22)
+$chkIgnore.Checked = $false
+$form.Controls.Add($chkIgnore)
+
 # --- ON/OFF トグル ---
 $btnToggle = New-Object System.Windows.Forms.Button
 $btnToggle.Text = "監視 開始 (OFF)"
-$btnToggle.Location = New-Object System.Drawing.Point(115, 145)
+$btnToggle.Location = New-Object System.Drawing.Point(115, 160)
 $btnToggle.Size = New-Object System.Drawing.Size(410, 40)
 $btnToggle.BackColor = [System.Drawing.Color]::LightGray
 $btnToggle.Font = New-Object System.Drawing.Font("Yu Gothic UI", 11, [System.Drawing.FontStyle]::Bold)
@@ -322,7 +336,7 @@ $form.Controls.Add($btnToggle)
 # --- 状態表示 ---
 $lblStatus = New-Object System.Windows.Forms.Label
 $lblStatus.Text = "監視: OFF"
-$lblStatus.Location = New-Object System.Drawing.Point(20, 205)
+$lblStatus.Location = New-Object System.Drawing.Point(20, 220)
 $lblStatus.Size = New-Object System.Drawing.Size(505, 24)
 $lblStatus.ForeColor = [System.Drawing.Color]::Gray
 $lblStatus.Font = New-Object System.Drawing.Font("Yu Gothic UI", 10)
@@ -331,7 +345,7 @@ $form.Controls.Add($lblStatus)
 # --- 補足説明 ---
 $lblNote = New-Object System.Windows.Forms.Label
 $lblNote.Text = "※ ON 以降に追記された行のみ転記します。シート切替で開始セルから再開。 ホットキー: Ctrl+Alt+L"
-$lblNote.Location = New-Object System.Drawing.Point(20, 235)
+$lblNote.Location = New-Object System.Drawing.Point(20, 250)
 $lblNote.Size = New-Object System.Drawing.Size(505, 40)
 $lblNote.ForeColor = [System.Drawing.Color]::DimGray
 $form.Controls.Add($lblNote)
