@@ -10,6 +10,7 @@
     - 書き込み先は GUI で指定したブックのアクティブシート
     - アクティブシート切替を検知したら書き込み位置を開始セルにリセット
     - ログの文字コードは Shift-JIS
+    - グローバルホットキー(Ctrl+Alt+L)で ON/OFF をトグル(アプリ非アクティブでも有効)
 
 .NOTES
     実行環境: Windows + Excel インストール済み / PowerShell
@@ -18,6 +19,34 @@
 # ===== アセンブリ読み込み =====
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+
+# ===== グローバルホットキー受信用クラス =====
+Add-Type -ReferencedAssemblies System.Windows.Forms @"
+using System;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+
+public class HotkeyWindow : NativeWindow {
+    public event Action HotkeyPressed;          // ホットキー押下時に発火
+    private const int WM_HOTKEY = 0x0312;
+    public int HotkeyId = 9000;
+
+    [DllImport("user32.dll")] public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+    [DllImport("user32.dll")] public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    public HotkeyWindow(IntPtr handle) { this.AssignHandle(handle); }   // 既存フォームの窓に相乗り
+    public bool Register(uint modifiers, uint vk) { return RegisterHotKey(this.Handle, HotkeyId, modifiers, vk); }
+    public void Unregister() { UnregisterHotKey(this.Handle, HotkeyId); }
+
+    protected override void WndProc(ref Message m) {
+        // WM_HOTKEY を捕捉してイベント発火
+        if (m.Msg == WM_HOTKEY && (int)m.WParam == HotkeyId && HotkeyPressed != null) {
+            HotkeyPressed();
+        }
+        base.WndProc(ref m);
+    }
+}
+"@
 
 # ===== グローバル状態 =====
 $script:isWatching      = $false      # 監視 ON/OFF
@@ -30,6 +59,7 @@ $script:lastSheetName   = ""          # 直近のアクティブシート名(切
 $script:targetWorkbook  = $null       # 対象ブックの COM オブジェクト
 $script:excelApp        = $null       # Excel.Application の COM オブジェクト
 $script:writtenCount    = 0           # 累計書き込み行数
+$script:hotkey          = $null       # グローバルホットキー
 
 # Shift-JIS エンコーディング
 $script:sjis = [System.Text.Encoding]::GetEncoding("Shift_JIS")
@@ -112,28 +142,30 @@ function Read-NewLines {
             $buffer  = New-Object byte[] $readLen
             $read    = $fs.Read($buffer, 0, $readLen)
 
-            # Shift-JIS でデコード
-            $text = $script:sjis.GetString($buffer, 0, $read)
-
-            # --- 完全な行のみ処理(末尾が改行で終わっていない場合は最終行を保留) ---
-            $endsWithNewline = $text.EndsWith("`n")
-            # 改行で分割(CRLF/LF両対応)
-            $rawLines = $text -replace "`r`n", "`n" -split "`n"
-
-            if ($endsWithNewline) {
-                # 末尾は分割により空要素になるので除去
-                $rawLines = $rawLines[0..($rawLines.Count - 2)]
-                # 読み取った全バイトを確定
-                $script:baseOffset = $currentSize
+            # --- 生バイト列で最後の改行(LF=0x0A)位置を探す ---
+            # 完全な行の末尾までだけをデコード対象にすることで、
+            # マルチバイト文字の途中で切れて文字化け/オフセットずれが起きるのを防ぐ。
+            # (Shift-JIS の2バイト目に 0x0A は出現しないため 0x0A 走査は安全)
+            $lastNL = -1
+            for ($i = $read - 1; $i -ge 0; $i--) {
+                if ($buffer[$i] -eq 0x0A) { $lastNL = $i; break }
             }
-            else {
-                # 最終行は未完(改行待ち)なので保留し、その手前までをオフセット確定
-                $lastPartial = $rawLines[-1]
-                $rawLines = $rawLines[0..($rawLines.Count - 2)]
-                # 保留分のバイト数を差し引いてオフセット確定
-                $partialBytes = $script:sjis.GetByteCount($lastPartial)
-                $script:baseOffset = $currentSize - $partialBytes
+
+            # 完全な行がまだ無ければ何も確定せず次回に持ち越し(改行待ち)
+            if ($lastNL -lt 0) {
+                $script:lastSize = $currentSize
+                return @()
             }
+
+            # 改行までの完全な行のみ Shift-JIS でデコード(必ず文字境界で切れる)
+            $text = $script:sjis.GetString($buffer, 0, $lastNL + 1)
+
+            # 消費した生バイト数だけオフセットを進める(残り半端なバイトは次回へ持ち越し)
+            $script:baseOffset = $script:baseOffset + ($lastNL + 1)
+
+            # 改行で分割(CRLF/LF両対応)。末尾の空要素を除去
+            $rawLines = ($text -replace "`r`n", "`n") -split "`n"
+            $rawLines = $rawLines[0..($rawLines.Count - 2)]
 
             $lines = @($rawLines)
             $script:lastSize = $currentSize
@@ -297,7 +329,7 @@ $form.Controls.Add($lblStatus)
 
 # --- 補足説明 ---
 $lblNote = New-Object System.Windows.Forms.Label
-$lblNote.Text = "※ ON 以降に追記された行のみ転記します。シートを切り替えると開始セルから再開します。"
+$lblNote.Text = "※ ON 以降に追記された行のみ転記します。シート切替で開始セルから再開。 ホットキー: Ctrl+Alt+L"
 $lblNote.Location = New-Object System.Drawing.Point(20, 235)
 $lblNote.Size = New-Object System.Drawing.Size(505, 40)
 $lblNote.ForeColor = [System.Drawing.Color]::DimGray
@@ -405,10 +437,16 @@ $btnToggle.Add_Click({
     }
 })
 
-# フォーム終了時: Timer 停止と COM 解放
+# フォーム終了時: Timer 停止・ホットキー解除・COM 解放
 $form.Add_FormClosing({
     $timer.Stop()
     $timer.Dispose()
+    # グローバルホットキー解除(登録解除しないと OS 側に残る)
+    if ($null -ne $script:hotkey) {
+        $script:hotkey.Unregister()
+        $script:hotkey.ReleaseHandle()
+        $script:hotkey = $null
+    }
     # COM オブジェクト解放(Excel 本体は閉じない)
     if ($null -ne $script:targetWorkbook) {
         [Runtime.InteropServices.Marshal]::ReleaseComObject($script:targetWorkbook) | Out-Null
@@ -420,6 +458,21 @@ $form.Add_FormClosing({
     }
     [System.GC]::Collect()
     [System.GC]::WaitForPendingFinalizers()
+})
+
+# グローバルホットキー登録(アプリ非アクティブでも有効) 既定: Ctrl + Alt + L
+$form.Add_Shown({
+    # ShowDialog 後はウィンドウハンドルが確定しているのでここで登録
+    $script:hotkey = New-Object HotkeyWindow($form.Handle)
+    # UI スレッド上で実行されるためトグル(COM操作)も安全
+    $script:hotkey.add_HotkeyPressed({ $btnToggle.PerformClick() })
+    # 修飾: MOD_ALT(0x1) + MOD_CONTROL(0x2) + MOD_NOREPEAT(0x4000) / 仮想キー: L=0x4C
+    $ok = $script:hotkey.Register((0x1 -bor 0x2 -bor 0x4000), 0x4C)
+    if (-not $ok) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "グローバルホットキー(Ctrl+Alt+L)の登録に失敗しました。他アプリと競合している可能性があります。",
+            "警告","OK","Warning") | Out-Null
+    }
 })
 
 # 起動時に一度ブック一覧を取得
