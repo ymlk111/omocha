@@ -9,7 +9,7 @@
     - ローテーション/クリア(サイズ減少)時は先頭から読み直し
     - 書き込み先は GUI で指定したブックのアクティブシート
     - アクティブシート切替を検知したら書き込み位置を開始セルにリセット
-    - ログの文字コードは Shift-JIS
+    - 文字コードは UTF-8 優先・不正バイトなら Shift-JIS に自動フォールバック
     - グローバルホットキー(Ctrl+Alt+L)で ON/OFF をトグル(アプリ非アクティブでも有効)
     - ［半角数字］で始まる行を無視するモード
 
@@ -62,8 +62,9 @@ $script:excelApp        = $null       # Excel.Application の COM オブジェ�
 $script:writtenCount    = 0           # 累計書き込み行数
 $script:hotkey          = $null       # グローバルホットキー
 
-# Shift-JIS エンコーディング
-$script:sjis = [System.Text.Encoding]::GetEncoding("Shift_JIS")
+# エンコーディング(UTF-8優先・不正バイトなら Shift-JIS にフォールバック)
+$script:encUtf8 = New-Object System.Text.UTF8Encoding($false, $true)  # BOMなし・不正バイトで例外
+$script:encSjis = [System.Text.Encoding]::GetEncoding("Shift_JIS")
 
 # ===== ユーティリティ: 起動中ブック一覧の取得 =====
 function Get-OpenWorkbooks {
@@ -146,7 +147,7 @@ function Read-NewLines {
             # --- 生バイト列で最後の改行(LF=0x0A)位置を探す ---
             # 完全な行の末尾までだけをデコード対象にすることで、
             # マルチバイト文字の途中で切れて文字化け/オフセットずれが起きるのを防ぐ。
-            # (Shift-JIS の2バイト目に 0x0A は出現しないため 0x0A 走査は安全)
+            # (UTF-8/Shift-JIS とも 2バイト目以降に 0x0A は出現しないため 0x0A 走査は安全)
             $lastNL = -1
             for ($i = $read - 1; $i -ge 0; $i--) {
                 if ($buffer[$i] -eq 0x0A) { $lastNL = $i; break }
@@ -158,8 +159,17 @@ function Read-NewLines {
                 return @()
             }
 
-            # 改行までの完全な行のみ Shift-JIS でデコード(必ず文字境界で切れる)
-            $text = $script:sjis.GetString($buffer, 0, $lastNL + 1)
+            # 改行までの完全な行のみデコード(必ず文字境界で切れる)
+            # UTF-8 として解釈できれば UTF-8、不正バイトがあれば Shift-JIS とみなす
+            $decodeLen = $lastNL + 1
+            try {
+                $text = $script:encUtf8.GetString($buffer, 0, $decodeLen)
+            }
+            catch {
+                $text = $script:encSjis.GetString($buffer, 0, $decodeLen)
+            }
+            # 先頭に UTF-8 BOM が残った場合は除去
+            $text = $text.TrimStart([char]0xFEFF)
 
             # 消費した生バイト数だけオフセットを進める(残り半端なバイトは次回へ持ち越し)
             $script:baseOffset = $script:baseOffset + ($lastNL + 1)
