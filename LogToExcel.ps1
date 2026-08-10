@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     ログファイルへの追記を監視し、新規追記行を Excel のアクティブシートへ
-    1行＝1セルで自動転記する常駐 GUI ツール。 (v2: 欠落対策・堅牢化版)
+    1行＝1セルで自動転記する常駐 GUI ツール。 (v2.1: 欠落対策・堅牢化版)
 
 .DESCRIPTION
     - 監視方式: Timer ポーリング(1秒)でファイルサイズの変化を検知
@@ -18,12 +18,13 @@
               ※ PowerShell 7 (pwsh.exe) は非対応 (Marshal.GetActiveObject が存在しないため)
     ファイルは UTF-8 (BOM付き) で保存すること (powershell.exe の文字化け防止)
 
-    v2 の主な修正点:
+    v2.1 の主な修正点:
       [欠落対策(主因)]
       - 保留キュー方式: 読み取った行はキューに保持し、Excel への書き込みが
         成功した分だけ消費する。busy(セル編集中/ドラッグ中: 0x800AC472,
         0x80010001, 0x8001010A 等)で失敗しても次 Tick で自動再試行 → 欠落しない
-      - 1セル上限(32,767文字)超の行は切り詰めて転記(COM例外でバッチ全滅を防止)
+      - 1セル上限(32,767文字)超の行は複数セルに分割して全文を保持
+        (超過行は下方向に複数セルへまたがり、以降の行はその分だけ下にずれる)
       - NumberFormat="@" を設定してから範囲一括書き込み
         ("=..." の数式解釈・日付/数値の自動変換を防ぎ、COM呼び出し回数も激減)
       [重要度: 高]
@@ -81,7 +82,7 @@ public class HotkeyWindow : NativeWindow {
 "@
 
 # ===== 定数 =====
-$EXCEL_CELL_MAX = 32767        # Excel の 1セル最大文字数(超過分は切り詰め)
+$EXCEL_CELL_MAX = 32767        # Excel の 1セル最大文字数(超過行は複数セルに分割)
 $EXCEL_MAX_ROW  = 1048576      # ワークシート最大行
 $EXCEL_MAX_COL  = 16384        # ワークシート最大列 (XFD)
 $MAX_READ_BYTES = 4MB          # 1Tick あたりの読み取り上限(巨大追記時のメモリ保護)
@@ -96,7 +97,7 @@ $script:startRow       = 0           # 書き込み開始行(1始まり)
 $script:sheetRows      = @{}         # シート名 -> 次に書く行オフセット(開始セル基準)
 $script:targetWorkbook = $null       # 対象ブックの COM オブジェクト
 $script:excelApp       = $null       # Excel.Application の COM オブジェクト
-$script:writtenCount   = 0           # 累計書き込み行数
+$script:writtenCount   = 0           # 累計書き込みセル数
 $script:pending        = New-Object System.Collections.Generic.Queue[string]  # 未書込行(書込成功まで保持)
 $script:lastError      = ""          # 直近の書き込みエラー(再試行中の表示用)
 $script:flushFailCount = 0           # 書き込み連続失敗回数
@@ -234,7 +235,7 @@ function Read-NewLines {
                 if ($read -ge $MAX_READ_BYTES) {
                     # 上限まで読んでも改行が無い超巨大行:
                     # 恒久スタックを避けるためチャンク全体を強制的に1行として確定する。
-                    # (文字境界で切れる可能性はあるが、どのみちセル上限で切り詰められる)
+                    # (文字境界で切れる可能性はあるが、セル分割で全文は保持される)
                     $lastNL = $read - 1
                     $forced = $true
                 }
@@ -370,9 +371,24 @@ function Invoke-Poll {
         }
 
         foreach ($l in $newLines) {
-            # セル上限で切り詰め(超過するとCOM例外になり、旧実装ではバッチ全体が欠落していた)
-            if ($l.Length -gt $EXCEL_CELL_MAX) { $l = $l.Substring(0, $EXCEL_CELL_MAX) }
-            $script:pending.Enqueue($l)
+            if ($l.Length -le $EXCEL_CELL_MAX) {
+                $script:pending.Enqueue($l)
+            }
+            else {
+                # セル上限(32,767文字)超の行は複数セルに分割して全文を保持する
+                # (超過行は下方向に複数セルへまたがる)
+                $pos = 0
+                while ($pos -lt $l.Length) {
+                    $len = [Math]::Min($EXCEL_CELL_MAX, $l.Length - $pos)
+                    # サロゲートペア(絵文字等)の途中で切らない
+                    if ($len -lt ($l.Length - $pos) -and
+                        [char]::IsHighSurrogate($l[$pos + $len - 1])) {
+                        $len--
+                    }
+                    $script:pending.Enqueue($l.Substring($pos, $len))
+                    $pos += $len
+                }
+            }
         }
 
         # 保留キュー上限: Excel へ長時間書けない場合のメモリ保護(古い方から破棄)
@@ -407,7 +423,7 @@ function Update-Status {
         $pos = "$sn (次: $($script:startRow + $off) 行目)"
     } catch {}
 
-    $msg = "監視中: ON / 書込先: $pos / 累計: $($script:writtenCount) 行"
+    $msg = "監視中: ON / 書込先: $pos / 累計: $($script:writtenCount) セル"
     if ($script:pending.Count -gt 0) { $msg += " / 保留: $($script:pending.Count) 行" }
     if ($script:droppedCount -gt 0)  { $msg += " / あふれ破棄: $($script:droppedCount) 行" }
     if ($script:readErrCount -gt 0)  { $msg += " / 読取失敗: 連続 $($script:readErrCount) 回" }
@@ -508,7 +524,7 @@ function Stop-Watching {
 #  GUI 構築
 # =====================================================================
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "ログ自動転記ツール v2"
+$form.Text = "ログ自動転記ツール v2.1"
 $form.Size = New-Object System.Drawing.Size(560, 400)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
