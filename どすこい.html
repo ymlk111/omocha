@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>どすこい親</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Yuji+Boku&family=Zen+Kaku+Gothic+New:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#E8DBC1; --ink:#2A1E14; --muted:#6B5843;
+  --clay:#C49B6C; --clay-edge:#9C7249;
+  --straw:#DCC67E; --straw-dark:#A58D47; --line:#FBF7EE;
+  --red:#B3302A; --red-dark:#7C1E19; --on-red:#FFF7EC;
+  --panel:#F1E7D3; --rule:#CDB994;
+  --brush:"Yuji Boku","Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif;
+  color-scheme:light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#191C26; --ink:#F1E7D3; --muted:#A99C88;
+    --clay:#5E4630; --clay-edge:#3E2D1E;
+    --straw:#B99F58; --straw-dark:#7F6A36; --line:#EDE3CF;
+    --red:#C8443A; --red-dark:#852A23; --on-red:#FFF6EA;
+    --panel:#232735; --rule:#363C4F;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#191C26; --ink:#F1E7D3; --muted:#A99C88;
+  --clay:#5E4630; --clay-edge:#3E2D1E;
+  --straw:#B99F58; --straw-dark:#7F6A36; --line:#EDE3CF;
+  --red:#C8443A; --red-dark:#852A23; --on-red:#FFF6EA;
+  --panel:#232735; --rule:#363C4F;
+  color-scheme:dark;
+}
+html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px);-webkit-text-size-adjust:100%}
+*,*::before,*::after{box-sizing:inherit}
+[hidden]{display:none!important}
+body{
+  margin:0;min-height:100%;background:var(--bg);color:var(--ink);
+  font-family:"Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Hiragino Sans","Noto Sans JP","Yu Gothic",Meiryo,sans-serif;
+  line-height:1.6;-webkit-tap-highlight-color:transparent;overflow-x:hidden;
+}
+main{max-width:480px;margin:0 auto;padding:20px 20px 40px;display:flex;flex-direction:column;align-items:center;gap:18px}
+.head{align-self:stretch}
+h1{margin:0;font-family:var(--brush);font-weight:400;font-size:30px;line-height:1.2}
+.lead{margin:6px 0 0;font-size:14px;color:var(--muted)}
+
+/* 土俵 */
+.dohyo{
+  position:relative;width:min(80vw,340px,50vh);aspect-ratio:1;border-radius:50%;
+  background:var(--clay);box-shadow:0 10px 0 var(--clay-edge);
+  display:grid;place-items:center;margin:6px 0 14px;flex-shrink:0;
+}
+.dohyo::before{
+  content:"";position:absolute;inset:0;border-radius:50%;
+  background:repeating-conic-gradient(from 4deg,var(--straw) 0 11deg,var(--straw-dark) 11deg 12deg);
+  -webkit-mask:radial-gradient(closest-side,transparent calc(100% - 16px),#000 calc(100% - 15px));
+  mask:radial-gradient(closest-side,transparent calc(100% - 16px),#000 calc(100% - 15px));
+}
+.shikiri{position:absolute;top:41%;height:18%;width:5px;border-radius:2px;background:var(--line);opacity:.9}
+.shikiri.l{left:17%}
+.shikiri.r{right:17%}
+.kana{position:relative;font-family:var(--brush);font-size:min(38vw,160px,24vh);line-height:1;color:var(--ink)}
+.kana.empty{color:var(--muted);opacity:.55}
+.kana.shuffling{opacity:.5}
+.kana.landed{animation:stamp .22s cubic-bezier(.2,.9,.3,1.2)}
+@keyframes stamp{from{transform:scale(1.3);opacity:.3}to{transform:scale(1);opacity:1}}
+.dohyo.with-count .kana{top:-.12em}
+.count{
+  position:absolute;bottom:12%;left:50%;transform:translateX(-50%);
+  font-family:var(--brush);font-size:min(9vw,36px,6vh);line-height:1;color:var(--line);white-space:nowrap;
+}
+
+/* 出すものの切り替え */
+.mode{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;font-size:14px}
+.seg{display:inline-flex;border:1.5px solid var(--rule);border-radius:10px;overflow:hidden}
+.seg button{font:inherit;padding:8px 16px;border:0;background:transparent;color:var(--muted);cursor:pointer;touch-action:manipulation}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg);font-weight:700}
+.max{display:inline-flex;align-items:center;gap:4px;color:var(--ink)}
+.max select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--rule);background:var(--panel);color:var(--ink)}
+
+.callout{margin:0;min-height:1.6em;font-family:var(--brush);font-size:22px;text-align:center}
+.call{
+  width:100%;max-width:340px;padding:16px 20px 14px;border:0;border-radius:14px;
+  background:var(--red);color:var(--on-red);font-family:var(--brush);font-size:34px;line-height:1.2;
+  cursor:pointer;box-shadow:0 5px 0 var(--red-dark);touch-action:manipulation;user-select:none;-webkit-user-select:none;
+}
+.call:active{transform:translateY(3px);box-shadow:0 2px 0 var(--red-dark)}
+:focus-visible{outline:3px solid var(--ink);outline-offset:3px}
+
+.history{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:13px;color:var(--muted);max-width:100%}
+.history-list{font-family:var(--brush);font-size:22px;letter-spacing:.35em;color:var(--ink);opacity:.75;text-align:center;word-break:break-all}
+
+/* 設定 */
+.settings{align-self:stretch;margin-top:12px;border-top:1px solid var(--rule)}
+.settings summary{
+  cursor:pointer;padding:14px 0;font-weight:700;font-size:16px;list-style:none;
+  display:flex;justify-content:space-between;align-items:center;
+}
+.settings summary::-webkit-details-marker{display:none}
+.settings summary::after{content:"＋";font-weight:400;color:var(--muted)}
+.settings[open] summary::after{content:"－"}
+.opt{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 0;border-bottom:1px solid var(--rule);font-size:15px;cursor:pointer}
+.opt small{display:block;font-size:12px;color:var(--muted)}
+.opt input[type=checkbox]{width:22px;height:22px;accent-color:var(--red);flex-shrink:0;margin:0}
+.opt select{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid var(--rule);background:var(--panel);color:var(--ink)}
+.opt.sub{padding-left:16px}
+.grid-note{margin:18px 0 10px;font-size:13px;color:var(--muted)}
+.pool{color:var(--ink);font-weight:700;margin-left:.5em;white-space:nowrap}
+.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+.k{
+  font-family:var(--brush);font-size:22px;padding:8px 0;border-radius:8px;
+  border:1.5px solid var(--rule);background:var(--panel);color:var(--ink);cursor:pointer;touch-action:manipulation;
+}
+.k[aria-pressed="false"]{background:transparent;color:var(--muted);text-decoration:line-through;opacity:.5}
+.k:disabled{opacity:.18;cursor:default}
+.grid-sep{grid-column:1/-1;font-size:12px;color:var(--muted);margin-top:10px}
+.actions{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}
+.ghost{font:inherit;font-size:14px;padding:10px 14px;border-radius:10px;border:1.5px solid var(--rule);background:transparent;color:var(--ink);cursor:pointer}
+
+@media (prefers-reduced-motion: reduce){
+  .kana.landed{animation:none}
+  .call:active{transform:none}
+}
+</style>
+</head>
+<body>
+<main>
+  <header class="head">
+    <h1>どすこい親</h1>
+    <p class="lead">親の代わりに文字を出して読み上げます。対面なら「文字だけ」で親指を上げて、オンラインなら「文字数も」で遊べます。</p>
+  </header>
+
+  <div class="mode">
+    <div class="seg" role="group" aria-label="出すもの">
+      <button type="button" id="modeKana" aria-pressed="true">文字だけ</button>
+      <button type="button" id="modeCount" aria-pressed="false">文字数も</button>
+    </div>
+    <label class="max" id="maxRow">2〜
+      <select id="optMaxCount" aria-label="最大の文字数">
+        <option value="3">3</option><option value="4">4</option><option value="5">5</option>
+        <option value="6">6</option><option value="7">7</option><option value="8">8</option>
+      </select>文字
+    </label>
+  </div>
+
+  <div id="dohyo" class="dohyo" aria-hidden="true">
+    <span class="shikiri l"></span>
+    <span class="shikiri r"></span>
+    <span id="kana" class="kana empty">？</span>
+    <span id="count" class="count" hidden></span>
+  </div>
+
+  <p id="callout" class="callout" aria-live="polite">ボタンを押すと始まります</p>
+  <button id="call" class="call" type="button">どすこい！</button>
+
+  <div id="historyWrap" class="history" hidden>
+    <span>さっき出た文字</span>
+    <span id="history" class="history-list"></span>
+  </div>
+
+  <details class="settings">
+    <summary>設定</summary>
+    <div>
+      <label class="opt"><span>読み上げる</span><input type="checkbox" id="optSpeak"></label>
+      <label class="opt"><span>濁音（が・ざ・だ・ば行）を入れる</span><input type="checkbox" id="optDaku"></label>
+      <label class="opt"><span>半濁音（ぱ行）を入れる</span><input type="checkbox" id="optHandaku"></label>
+      <label class="opt"><span>直近10回に出た文字は出さない</span><input type="checkbox" id="optNoRepeat"></label>
+    </div>
+    <p class="grid-note">タップした文字は出なくなります。<span id="poolInfo" class="pool"></span></p>
+    <div id="grid" class="grid"></div>
+    <div class="actions">
+      <button id="useAll" type="button" class="ghost">全部使う</button>
+      <button id="reset" type="button" class="ghost">初期設定に戻す</button>
+    </div>
+  </details>
+</main>
+
+<script>
+(() => {
+  const KEY = 'dosukoi-oya-v1';
+  const SEION = [
+    ["あ","い","う","え","お"],["か","き","く","け","こ"],["さ","し","す","せ","そ"],
+    ["た","ち","つ","て","と"],["な","に","ぬ","ね","の"],["は","ひ","ふ","へ","ほ"],
+    ["ま","み","む","め","も"],["や",null,"ゆ",null,"よ"],["ら","り","る","れ","ろ"],
+    ["わ",null,"を",null,"ん"]
+  ];
+  const DAKU = [["が","ぎ","ぐ","げ","ご"],["ざ","じ","ず","ぜ","ぞ"],["だ","ぢ","づ","で","ど"],["ば","び","ぶ","べ","ぼ"]];
+  const HANDAKU = [["ぱ","ぴ","ぷ","ぺ","ぽ"]];
+  const DEFAULTS = { speak:true, daku:false, handaku:false, noRepeat:true, randomCount:false, maxCount:5, excluded:["を","ん","ぢ","づ"] };
+
+  const clone = o => JSON.parse(JSON.stringify(o));
+  function load(){
+    try{
+      const raw = localStorage.getItem(KEY);
+      if(raw){ return Object.assign(clone(DEFAULTS), JSON.parse(raw)); }
+    }catch(e){}
+    return clone(DEFAULTS);
+  }
+  function save(){ try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} }
+
+  let state = load();
+  if(!Array.isArray(state.excluded)) state.excluded = clone(DEFAULTS.excluded);
+  const history = [];
+
+  const $ = id => document.getElementById(id);
+  const els = {
+    kana:$('kana'), count:$('count'), callout:$('callout'), call:$('call'),
+    history:$('history'), historyWrap:$('historyWrap'), grid:$('grid'), poolInfo:$('poolInfo'),
+    speak:$('optSpeak'), daku:$('optDaku'), handaku:$('optHandaku'), noRepeat:$('optNoRepeat'),
+    modeKana:$('modeKana'), modeCount:$('modeCount'), maxCount:$('optMaxCount'), maxRow:$('maxRow'),
+    dohyo:$('dohyo'),
+    reset:$('reset'), useAll:$('useAll')
+  };
+  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function allKana(){
+    let rows = SEION.slice();
+    if(state.daku) rows = rows.concat(DAKU);
+    if(state.handaku) rows = rows.concat(HANDAKU);
+    return rows.flat().filter(Boolean);
+  }
+  function pool(){ return allKana().filter(k => !state.excluded.includes(k)); }
+  function pick(){
+    let p = pool();
+    if(!p.length) return null;
+    if(state.noRepeat && p.length > 1){
+      const recent = history.slice(0, Math.min(10, p.length - 1));
+      const q = p.filter(k => !recent.includes(k));
+      if(q.length) p = q;
+    }
+    return p[Math.floor(Math.random() * p.length)];
+  }
+  const randInt = (a,b) => a + Math.floor(Math.random() * (b - a + 1));
+  const toKata = s => s.replace(/[\u3041-\u3096]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60));
+
+  /* 読み上げ */
+  const synth = ('speechSynthesis' in window) ? window.speechSynthesis : null;
+  let jaVoice = null;
+  function pickVoice(){
+    if(!synth) return;
+    const vs = synth.getVoices();
+    jaVoice = vs.find(v => /^ja/i.test(v.lang)) || null;
+  }
+  if(synth){
+    pickVoice();
+    if('onvoiceschanged' in synth) synth.onvoiceschanged = pickVoice;
+  }
+  function say(text){
+    if(!synth || !state.speak) return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'ja-JP';
+    if(jaVoice) u.voice = jaVoice;
+    u.rate = 1.05; u.pitch = 0.9;
+    synth.speak(u);
+  }
+
+  /* 画面スリープ防止（対応ブラウザのみ） */
+  let wakeLock = null, started = false;
+  async function keepAwake(){
+    try{
+      if('wakeLock' in navigator && !wakeLock){
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      }
+    }catch(e){}
+  }
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'visible' && started) keepAwake();
+  });
+
+  /* コール */
+  let busy = false;
+  function call(){
+    if(busy) return;
+    const k = pick();
+    if(!k){
+      els.kana.textContent = '？';
+      els.kana.classList.add('empty');
+      els.count.hidden = true;
+      els.callout.textContent = '使う文字がありません。設定で文字を選んでください。';
+      return;
+    }
+    busy = true; started = true;
+    keepAwake();
+    const n = state.randomCount ? randInt(2, Number(state.maxCount) || 5) : null;
+
+    if(synth){ synth.cancel(); say('どすこい'); }
+    els.count.hidden = true;
+    els.dohyo.classList.remove('with-count');
+    els.callout.textContent = 'どすこい…';
+    els.kana.classList.remove('empty','landed');
+
+    if(reduceMotion){ land(k, n); return; }
+    const p = pool();
+    const t0 = performance.now();
+    els.kana.classList.add('shuffling');
+    const timer = setInterval(() => {
+      els.kana.textContent = p[Math.floor(Math.random() * p.length)];
+      if(performance.now() - t0 >= 520){ clearInterval(timer); land(k, n); }
+    }, 55);
+  }
+  function land(k, n){
+    els.kana.classList.remove('shuffling');
+    els.kana.textContent = k;
+    void els.kana.offsetWidth;
+    els.kana.classList.add('landed');
+    if(n){
+      els.count.textContent = n + '文字';
+      els.count.hidden = false;
+      els.dohyo.classList.add('with-count');
+    }
+    els.callout.textContent = 'どすこい、' + k + '！' + (n ? '　' + n + '文字' : '');
+    say(n ? toKata(k) + '、' + n + '文字！' : toKata(k) + '！');
+    history.unshift(k);
+    if(history.length > 30) history.length = 30;
+    renderHistory();
+    busy = false;
+  }
+  function renderHistory(){
+    const prev = history.slice(1, 13);
+    els.historyWrap.hidden = prev.length === 0;
+    els.history.textContent = prev.join('');
+  }
+
+  /* 文字の選択グリッド */
+  function updatePoolInfo(){ els.poolInfo.textContent = 'いま出る文字：' + pool().length + '字'; }
+  function renderGrid(){
+    els.grid.innerHTML = '';
+    const sections = [
+      { rows:SEION, on:true },
+      { rows:DAKU, on:state.daku, label:'濁音' },
+      { rows:HANDAKU, on:state.handaku, label:'半濁音' }
+    ];
+    sections.forEach((sec, i) => {
+      if(i > 0){
+        const d = document.createElement('div');
+        d.className = 'grid-sep';
+        d.textContent = sec.label + (sec.on ? '' : '（オフ）');
+        els.grid.appendChild(d);
+      }
+      sec.rows.forEach(row => row.forEach(k => {
+        if(!k){
+          const s = document.createElement('span');
+          s.setAttribute('aria-hidden','true');
+          els.grid.appendChild(s);
+          return;
+        }
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = 'k'; b.textContent = k;
+        b.setAttribute('aria-pressed', String(!state.excluded.includes(k)));
+        b.disabled = !sec.on;
+        b.addEventListener('click', () => {
+          const idx = state.excluded.indexOf(k);
+          if(idx >= 0) state.excluded.splice(idx, 1); else state.excluded.push(k);
+          b.setAttribute('aria-pressed', String(idx >= 0));
+          save(); updatePoolInfo();
+        });
+        els.grid.appendChild(b);
+      }));
+    });
+    updatePoolInfo();
+  }
+
+  function syncInputs(){
+    els.speak.checked = !!state.speak;
+    els.daku.checked = !!state.daku;
+    els.handaku.checked = !!state.handaku;
+    els.noRepeat.checked = !!state.noRepeat;
+    els.modeKana.setAttribute('aria-pressed', String(!state.randomCount));
+    els.modeCount.setAttribute('aria-pressed', String(!!state.randomCount));
+    els.maxCount.value = String(state.maxCount);
+    els.maxRow.hidden = !state.randomCount;
+  }
+
+  els.modeKana.addEventListener('click', () => { state.randomCount = false; save(); syncInputs(); });
+  els.modeCount.addEventListener('click', () => { state.randomCount = true; save(); syncInputs(); });
+
+  ['speak','daku','handaku','noRepeat'].forEach(key => {
+    els[key].addEventListener('change', () => {
+      state[key] = els[key].checked;
+      if(key === 'speak' && !state.speak && synth) synth.cancel();
+      save(); syncInputs();
+      if(key === 'daku' || key === 'handaku') renderGrid();
+    });
+  });
+  els.maxCount.addEventListener('change', () => { state.maxCount = Number(els.maxCount.value); save(); });
+  els.useAll.addEventListener('click', () => { state.excluded = []; save(); renderGrid(); });
+  els.reset.addEventListener('click', () => { state = clone(DEFAULTS); save(); syncInputs(); renderGrid(); });
+
+  els.call.addEventListener('click', call);
+  document.addEventListener('keydown', e => {
+    if(e.target !== document.body) return;
+    if(e.code === 'Space' || e.key === 'Enter'){ e.preventDefault(); call(); }
+  });
+
+  syncInputs();
+  renderGrid();
+})();
+</script>
+</body>
+</html>
