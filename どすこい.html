@@ -142,12 +142,10 @@ h1{margin:0;font-family:var(--brush);font-weight:400;font-size:30px;line-height:
       <button type="button" id="modeKana" aria-pressed="true">文字だけ</button>
       <button type="button" id="modeCount" aria-pressed="false">文字数も</button>
     </div>
-    <label class="max" id="maxRow">2〜
-      <select id="optMaxCount" aria-label="最大の文字数">
-        <option value="3">3</option><option value="4">4</option><option value="5">5</option>
-        <option value="6">6</option><option value="7">7</option><option value="8">8</option>
-      </select>文字
-    </label>
+    <div class="max" id="maxRow">
+      <select id="optMinCount" aria-label="最小の文字数"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option></select>〜
+      <select id="optMaxCount" aria-label="最大の文字数"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option></select>文字
+    </div>
   </div>
 
   <div id="dohyo" class="dohyo" aria-hidden="true">
@@ -193,7 +191,7 @@ h1{margin:0;font-family:var(--brush);font-weight:400;font-size:30px;line-height:
   ];
   const DAKU = [["が","ぎ","ぐ","げ","ご"],["ざ","じ","ず","ぜ","ぞ"],["だ","ぢ","づ","で","ど"],["ば","び","ぶ","べ","ぼ"]];
   const HANDAKU = [["ぱ","ぴ","ぷ","ぺ","ぽ"]];
-  const DEFAULTS = { speak:true, daku:false, handaku:false, noRepeat:true, randomCount:false, maxCount:5, excluded:["を","ん","ぢ","づ"] };
+  const DEFAULTS = { speak:true, daku:false, handaku:false, noRepeat:true, randomCount:false, minCount:2, maxCount:5, excluded:["を","ん","ぢ","づ"] };
 
   const clone = o => JSON.parse(JSON.stringify(o));
   function load(){
@@ -214,7 +212,7 @@ h1{margin:0;font-family:var(--brush);font-weight:400;font-size:30px;line-height:
     kana:$('kana'), count:$('count'), callout:$('callout'), call:$('call'),
     history:$('history'), historyWrap:$('historyWrap'), grid:$('grid'), poolInfo:$('poolInfo'),
     speak:$('optSpeak'), daku:$('optDaku'), handaku:$('optHandaku'), noRepeat:$('optNoRepeat'),
-    modeKana:$('modeKana'), modeCount:$('modeCount'), maxCount:$('optMaxCount'), maxRow:$('maxRow'),
+    modeKana:$('modeKana'), modeCount:$('modeCount'), minCount:$('optMinCount'), maxCount:$('optMaxCount'), maxRow:$('maxRow'),
     dohyo:$('dohyo'),
     reset:$('reset'), useAll:$('useAll')
   };
@@ -289,7 +287,8 @@ h1{margin:0;font-family:var(--brush);font-weight:400;font-size:30px;line-height:
     }
     busy = true; started = true;
     keepAwake();
-    const n = state.randomCount ? randInt(2, Number(state.maxCount) || 5) : null;
+    const lo = Number(state.minCount) || 2, hi = Number(state.maxCount) || 5;
+    const n = state.randomCount ? randInt(Math.min(lo, hi), Math.max(lo, hi)) : null;
 
     if(synth){ synth.cancel(); say('どすこい'); }
     els.count.hidden = true;
@@ -375,6 +374,7 @@ h1{margin:0;font-family:var(--brush);font-weight:400;font-size:30px;line-height:
     els.noRepeat.checked = !!state.noRepeat;
     els.modeKana.setAttribute('aria-pressed', String(!state.randomCount));
     els.modeCount.setAttribute('aria-pressed', String(!!state.randomCount));
+    els.minCount.value = String(state.minCount);
     els.maxCount.value = String(state.maxCount);
     els.maxRow.hidden = !state.randomCount;
   }
@@ -390,7 +390,16 @@ h1{margin:0;font-family:var(--brush);font-weight:400;font-size:30px;line-height:
       if(key === 'daku' || key === 'handaku') renderGrid();
     });
   });
-  els.maxCount.addEventListener('change', () => { state.maxCount = Number(els.maxCount.value); save(); });
+  els.minCount.addEventListener('change', () => {
+    state.minCount = Number(els.minCount.value);
+    if(state.minCount > state.maxCount) state.maxCount = state.minCount;
+    save(); syncInputs();
+  });
+  els.maxCount.addEventListener('change', () => {
+    state.maxCount = Number(els.maxCount.value);
+    if(state.maxCount < state.minCount) state.minCount = state.maxCount;
+    save(); syncInputs();
+  });
   els.useAll.addEventListener('click', () => { state.excluded = []; save(); renderGrid(); });
   els.reset.addEventListener('click', () => { state = clone(DEFAULTS); save(); syncInputs(); renderGrid(); });
 
