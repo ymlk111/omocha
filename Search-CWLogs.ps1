@@ -7,7 +7,10 @@
 
     起動方法は 2 通りあります。
       ・画面あり : 引数なしで実行する（または -Gui を付ける）と入力画面が開きます。
-      ・画面なし : -LogGroup と -Keyword を指定すると、そのまま検索して CSV を出力します。
+      ・画面なし : -LogGroup を指定すると、そのまま検索して CSV を出力します。
+
+    検索条件（-Keyword）は省略できます。省略すると、期間内のログを全件取得します。
+    結果は何件あっても 1 つの CSV に時刻順で出力します（途中で中断・失敗した場合は .partial ファイルに途中まで残ります）。
 
     1 回のクエリは limit 10000 で実行します。上限に達した場合は、取得済みの 10,000 件を活かしたまま
     「最後に取得した時刻」から続きを取得します（残り件数から分割数を決め、重複は自動で除外）。
@@ -17,7 +20,8 @@
     検索対象のロググループ名。カンマ区切りで複数指定できます（最大 50）。
 
 .PARAMETER Keyword
-    検索条件。カンマ区切りで複数指定できます。既定は AND（すべて含む）。-Or を付けると OR（いずれかを含む）。
+    検索条件。省略すると期間内の全件を取得します。
+    カンマ区切りで複数指定できます。既定は AND（すべて含む）。-Or を付けると OR（いずれかを含む）。
     大文字・小文字は区別されます。
 
 .PARAMETER Days
@@ -59,6 +63,10 @@
 
 .EXAMPLE
     .\Search-CwLogs.ps1 -LogGroup /app/web -Keyword "timeout","refused" -Or -From 2026-10-01 -To 2026-10-02 -OutFile C:\work\result.csv
+
+.EXAMPLE
+    .\Search-CwLogs.ps1 -LogGroup /app/web -From "2026-10-05 13:00" -To "2026-10-05 14:00"
+    検索条件なしで、その 1 時間のログを全件取得します。
 #>
 [CmdletBinding()]
 param(
@@ -116,6 +124,9 @@ $script:BytesScanned    = [double]0
 $script:QueryCount      = 0
 $script:Truncated       = $false
 $script:LastOutPath     = $null
+$script:Writer          = $null    # CSV の書き込み先（取得しながら順次書き出す）
+$script:RowCount        = 0        # CSV に書き出した件数
+$script:LastProgress    = [DateTime]::UtcNow
 # 続きの取得は「最後に取得した秒」から始めるため、その 1 秒分だけ前回と重なる。重複除外用に覚えておく
 $script:OverlapSecond   = [long]-1
 $script:OverlapKeys     = New-Object 'System.Collections.Generic.HashSet[string]'
@@ -327,7 +338,7 @@ function Invoke-InsightsQuery {
     return $result
 }
 
-# クエリ結果 1 行を変換する。Row = CSV 用の行 / Second = 発生時刻の epoch 秒 / Key = 重複判定用の一意キー
+# クエリ結果 1 行を変換する。Line = CSV の 1 行 / Second = 発生時刻の epoch 秒 / Key = 重複判定用の一意キー
 function ConvertTo-Row {
     param($Fields)
 
@@ -347,19 +358,21 @@ function ConvertTo-Row {
     $key = [string]$map['@ptr']
     if (-not $key) { $key = '{0}|{1}|{2}' -f $timeText, $map['@logStream'], $map['@message'] }
 
+    # CSV の 1 行を組み立てる（全項目を引用符でくくり、項目内の " は "" にする。改行はそのまま残す）
+    $group   = ([string]$map['@log']) -replace '^\d{12}:', ''
+    $stream  = [string]$map['@logStream']
+    $message = [string]$map['@message']
+    $line = '"' + $timeText.Replace('"', '""') + '","' + $group.Replace('"', '""') + '","' +
+            $stream.Replace('"', '""') + '","' + $message.Replace('"', '""') + '"'
+
     @{
         Second = $second
         Key    = $key
-        Row    = [pscustomobject][ordered]@{
-            timestamp_jst = $timeText
-            log_group     = ([string]$map['@log']) -replace '^\d{12}:', ''
-            log_stream    = [string]$map['@logStream']
-            message       = [string]$map['@message']
-        }
+        Line   = $line
     }
 }
 
-# 期間内の全件を時刻順に取得する。
+# 期間内の全件を時刻順に取得し、CSV（$script:Writer）へ順次書き出す。
 # 上限（limit 10000）に達したら、取得済みの行は捨てずに「最後に取得した秒」から続きを取得する。
 # 続きの範囲は、残り件数（recordsMatched - 取得件数）から 1 回あたり約 $TargetRows 件になるよう分割する。
 function Get-LogRows {
@@ -377,7 +390,10 @@ function Get-LogRows {
     # 今回の結果のうち「最後の 1 秒」に含まれる行のキーを集めながら出力する
     $lastSecond = [long]-1
     $lastKeys   = New-Object 'System.Collections.Generic.HashSet[string]'
+    $index      = 0
     foreach ($fields in $result.results) {
+        $index++
+        if ($index % 1000 -eq 0) { Test-Cancel }
         $item = ConvertTo-Row -Fields $fields
         if ($item.Second -ne $lastSecond) {
             $lastSecond = $item.Second
@@ -385,7 +401,14 @@ function Get-LogRows {
         }
         [void]$lastKeys.Add($item.Key)
         if ($item.Second -eq $skipSecond -and $skipKeys.Contains($item.Key)) { continue }
-        $item.Row
+        $script:Writer.WriteLine($item.Line)
+        $script:RowCount++
+    }
+
+    # 件数が多いときは、5 秒に 1 回ほど途中経過を出す
+    if ($script:QueryCount -gt 1 -and ([DateTime]::UtcNow - $script:LastProgress).TotalSeconds -ge 5) {
+        Write-Status ('  {0} 件まで取得しました...' -f $script:RowCount)
+        $script:LastProgress = [DateTime]::UtcNow
     }
 
     if ($count -lt $MaxRows) { return }
@@ -422,6 +445,7 @@ function Get-LogRows {
     if ($parts -lt 1) { $parts = [long]1 }
     if ($parts -gt $seconds) { $parts = $seconds }
     $size = [long][math]::Ceiling($seconds / $parts)
+    $result = $null   # 続きを取得している間、不要になった結果を抱えたままにしない
 
     Write-Status ('  上限 {0} 件に達しました。続きを {1} 回に分けて取得します...' -f $MaxRows, $parts)
     $windowStart = $next
@@ -432,7 +456,8 @@ function Get-LogRows {
     }
 }
 
-# 検索の本体。入力チェック → 認証確認 → 検索 → CSV 出力までを行う。
+# 検索の本体。入力チェック → 認証確認 → 検索しながら CSV へ出力、までを行う。
+# 検索条件が空なら期間内の全件を取得する。
 # 出力した CSV のパスは $script:LastOutPath に入る（0 件のときは $null）
 function Invoke-LogSearch {
     param(
@@ -448,6 +473,9 @@ function Invoke-LogSearch {
     )
 
     $script:LastOutPath   = $null
+    $script:Writer        = $null
+    $script:RowCount      = 0
+    $script:LastProgress  = [DateTime]::UtcNow
     $script:ActiveQueryId = $null
     $script:BytesScanned  = [double]0
     $script:QueryCount    = 0
@@ -461,7 +489,6 @@ function Invoke-LogSearch {
     $keywords = @($SearchKeyword | Where-Object { $_ -and $_.Trim() })
     if ($groups.Count -eq 0) { throw 'ロググループを 1 つ以上指定してください。' }
     if ($groups.Count -gt 50) { throw 'ロググループは一度に 50 個までです。' }
-    if ($keywords.Count -eq 0) { throw '検索条件を 1 つ以上指定してください。' }
     if ($SearchDays -lt 1 -or $SearchDays -gt $MaxRangeDays) { throw "日数は 1 ～ $MaxRangeDays で指定してください。" }
 
     $nowJst = [DateTimeOffset]::UtcNow.ToOffset($JstOffset)
@@ -487,16 +514,29 @@ function Invoke-LogSearch {
     $startEpoch = [long][math]::Floor(($startJst.UtcDateTime - $EpochUtc).TotalSeconds)
     $endEpoch   = [long][math]::Floor(($endJst.UtcDateTime - $EpochUtc).TotalSeconds) - 1
 
-    $joiner = ' and '
-    if ($UseOr) { $joiner = ' or ' }
-    $condition = (@($keywords | ForEach-Object { ConvertTo-LikeTerm -Text $_ }) -join $joiner)
+    # 検索条件があれば filter を付ける。なければ期間内の全件が対象になる
+    $filterPart = ''
+    $condition  = '（指定なし＝期間内の全件を取得）'
+    if ($keywords.Count -gt 0) {
+        $joiner = ' and '
+        if ($UseOr) { $joiner = ' or ' }
+        $condition  = (@($keywords | ForEach-Object { ConvertTo-LikeTerm -Text $_ }) -join $joiner)
+        $filterPart = " | filter $condition"
+    }
     $script:LogGroups   = $groups
-    $script:QueryString = "fields @timestamp, @log, @logStream, @message | filter $condition | sort @timestamp asc | limit $MaxRows"
+    $script:QueryString = "fields @timestamp, @log, @logStream, @message$filterPart | sort @timestamp asc | limit $MaxRows"
 
     if (-not $OutputFile) {
         $OutputFile = 'cwlogs_{0}.csv' -f $nowJst.ToString('yyyyMMdd_HHmmss', $Invariant)
     }
     $outPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputFile)
+    $outFolder = Split-Path -Path $outPath -Parent
+    if ($outFolder -and -not (Test-Path -LiteralPath $outFolder)) {
+        throw "出力先のフォルダーが存在しません: $outFolder"
+    }
+    # 取得中は .partial に書き、最後まで取得できたら正式なファイル名にする
+    $partialPath = $outPath + '.partial'
+    $completed   = $false
 
     # ---- 実行 ----
     $script:RequestFile = Join-Path ([IO.Path]::GetTempPath()) ('cwlogs_request_{0}.json' -f [guid]::NewGuid().ToString('N'))
@@ -520,28 +560,53 @@ function Invoke-LogSearch {
         Write-Status ('検索条件      : {0}' -f $condition)
         Write-Status '検索中...'
 
-        $rows = @(Get-LogRows -StartEpoch $startEpoch -EndEpoch $endEpoch)
+        # Excel でそのまま開けるよう BOM 付き UTF-8 で、取得した分から順に書き出す（件数が多くてもメモリにためない）
+        $script:Writer = New-Object System.IO.StreamWriter($partialPath, $false, $Utf8Bom)
+        $script:Writer.NewLine = "`r`n"
+        $script:Writer.WriteLine('"timestamp_jst","log_group","log_stream","message"')
+
+        Get-LogRows -StartEpoch $startEpoch -EndEpoch $endEpoch
+
+        $script:Writer.Dispose()
+        $script:Writer = $null
 
         $scannedMb = [math]::Round($script:BytesScanned / 1MB, 1)
-        Write-Status ('ヒット {0} 件 / クエリ {1} 回 / スキャン量 {2} MB' -f $rows.Count, $script:QueryCount, $scannedMb)
+        Write-Status ('ヒット {0} 件 / クエリ {1} 回 / スキャン量 {2} MB' -f $script:RowCount, $script:QueryCount, $scannedMb)
         if ($script:Truncated) {
-            Write-Status -IsWarning "同じ 1 秒間に $MaxRows 件以上ヒットした箇所があり、その秒の一部が欠けている可能性があります。検索条件を絞ってください。"
+            Write-Status -IsWarning "同じ 1 秒間に $MaxRows 件以上ヒットした箇所があり、その秒の一部が欠けている可能性があります。検索条件で絞り込んでください。"
         }
 
-        if ($rows.Count -eq 0) {
+        if ($script:RowCount -gt 1048575) {
+            Write-Status -IsWarning 'Excel で開ける行数（1,048,576 行）を超えています。CSV には全件入っていますが、Excel では途中までしか表示されません。'
+        }
+
+        if ($script:RowCount -eq 0) {
+            Remove-Item -LiteralPath $partialPath -Force
             Write-Status '該当するログはありませんでした（CSV は作成していません）。'
         }
         else {
-            $csvLines = [string[]]@($rows | ConvertTo-Csv -NoTypeInformation)
-            # Excel でそのまま開けるよう BOM 付き UTF-8 で書き出す
-            [IO.File]::WriteAllLines($outPath, $csvLines, $Utf8Bom)
+            if (Test-Path -LiteralPath $outPath) { Remove-Item -LiteralPath $outPath -Force }
+            [IO.File]::Move($partialPath, $outPath)
             $script:LastOutPath = $outPath
             Write-Status "出力しました: $outPath"
         }
+        $completed = $true
     }
     finally {
-        # 中断（Ctrl+C や「中止」）された場合は実行中のクエリを止める
+        # 中断（Ctrl+C や「中止」）・失敗した場合の後始末
         $script:IgnoreCancel = $true
+        if ($script:Writer) {
+            try { $script:Writer.Dispose() } catch { }
+            $script:Writer = $null
+        }
+        if (-not $completed -and (Test-Path -LiteralPath $partialPath)) {
+            if ($script:RowCount -gt 0) {
+                Write-Status ('途中までの {0} 件を次のファイルに残しました: {1}' -f $script:RowCount, $partialPath)
+            }
+            else {
+                Remove-Item -LiteralPath $partialPath -Force
+            }
+        }
         if ($script:ActiveQueryId) {
             try { [void](Invoke-Aws -Arguments @('logs', 'stop-query', '--query-id', $script:ActiveQueryId)) } catch { }
             $script:ActiveQueryId = $null
@@ -582,6 +647,15 @@ function Update-RangeControl {
 function Start-GuiSearch {
     if ($script:Running) { return }
     $ui = $script:Ui
+
+    # 検索条件が空欄のときは全件取得になるので、押し間違いに備えて確認する
+    if (@($ui.Keyword.Lines | Where-Object { $_ -and $_.Trim() }).Count -eq 0) {
+        $answer = [System.Windows.Forms.MessageBox]::Show(
+            $ui.Form, "検索条件が空欄です。期間内のログを全件取得します。`r`n件数が多いと時間がかかります。続けますか？", '全件取得の確認',
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question)
+        if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+    }
 
     $script:Running         = $true
     $script:CancelRequested = $false
@@ -658,6 +732,7 @@ function New-SearchForm {
 
     # 検索条件
     [void](New-UiControl Label $form 12 84 112 36 "検索条件`r`n（1 行に 1 つ）")
+    [void](New-UiControl Label $form 12 122 116 18 '空欄なら全件取得')
     $ui.Keyword = New-UiControl TextBox $form 130 82 498 62
     $ui.Keyword.Multiline     = $true
     $ui.Keyword.AcceptsReturn = $true
@@ -784,7 +859,7 @@ function Show-SearchForm {
         Add-Type -AssemblyName System.Drawing
     }
     catch {
-        throw '画面を表示できません（Windows Forms が使えない環境です）。-LogGroup と -Keyword を指定して画面なしで実行してください。'
+        throw '画面を表示できません（Windows Forms が使えない環境です）。-LogGroup を指定して画面なしで実行してください。'
     }
     [System.Windows.Forms.Application]::EnableVisualStyles()
 
@@ -808,8 +883,8 @@ if ($Gui -or (-not $LogGroup -and -not $Keyword)) {
 }
 else {
     # 画面なし
-    if (-not $LogGroup -or -not $Keyword) {
-        throw '-LogGroup と -Keyword の両方を指定してください（引数なしで実行すると入力画面が開きます）。'
+    if (-not $LogGroup) {
+        throw '-LogGroup を指定してください（引数なしで実行すると入力画面が開きます）。'
     }
     Invoke-LogSearch -SearchLogGroup $LogGroup -SearchKeyword $Keyword -SearchDays $Days `
         -SearchFrom $From -SearchTo $To -UseOr $Or.IsPresent `
