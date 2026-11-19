@@ -8,7 +8,7 @@
 //   - ```mermaid のコードブロックは図として描画（含まれるときだけ mermaid.js を読込）
 //   - 言語指定付きコードブロックは highlight.js で色付け（含まれるときだけ読込）
 //   - 相対パスの画像・リンクは .md ファイルのあるフォルダを基準に解決
-//   - 数式：$...$（インライン）、$$...$$ や ```math（ブロック）を KaTeX で描画
+//   - 数式：$...$ / \(...\)（インライン）、$$...$$ / \[...\] / ```math（ブロック）を KaTeX で描画
 //   - クリックで展開：<details><summary>見出し</summary> ... </details>（中に Markdown 可）
 //   - 脚注：本文に [^1]、定義に [^1]: 内容（GitHub と同じく文末に一覧表示）
 //   - 見出しに GitHub 風の id を付与／先頭の YAML Front Matter は折りたたみ表示
@@ -55,6 +55,9 @@ var CONFIG = {
     markedJs:    "https://cdn.jsdelivr.net/npm/marked@18/lib/marked.umd.js",
     turndownJs:  "https://cdn.jsdelivr.net/npm/turndown@7/lib/turndown.browser.umd.js",  // プレビュー編集用
     katexJs:     "https://cdn.jsdelivr.net/npm/katex@0.19/dist/katex.min.js",                // 数式。"" で無効
+    // 任意。katex.min.css を指定すると aligned の揃え位置などがより正確になる
+    //（CSS と同じ場所に KaTeX の fonts フォルダーも置く）。"" ならブラウザ標準の数式表示（MathML）
+    katexCss:    "",
     mermaidJs:   "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js",              // "" で無効
     hljsJs:      "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/highlight.min.js", // "" で無効
     hljsCss:     "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/styles/github.min.css",
@@ -134,6 +137,7 @@ function buildHtml(md, eol, title, path, baseHref) {
         eol:         eol,
         breaks:      !!CONFIG.breaks,
         math:        !!CONFIG.katexJs,
+        katexCss:    !!CONFIG.katexCss,
         mermaidJs:   toUrl(CONFIG.mermaidJs),
         hljsJs:      toUrl(CONFIG.hljsJs),
         hljsCss:     toUrl(CONFIG.hljsCss),
@@ -149,6 +153,9 @@ function buildHtml(md, eol, title, path, baseHref) {
         h.push('<base href="' + escapeHtml(baseHref) + '">');
     }
     h.push('<title>' + escapeHtml(title) + ' - Markdown Preview</title>');
+    if (CONFIG.katexJs && CONFIG.katexCss) {
+        h.push('<link rel="stylesheet" href="' + escapeHtml(toUrl(CONFIG.katexCss)) + '">');
+    }
     h.push('<style>' + heredoc(CSS) + '</style>');
     h.push('</head>');
     h.push('<body>');
@@ -162,12 +169,15 @@ function buildHtml(md, eol, title, path, baseHref) {
            '<span class="path" title="' + escapeHtml(path || title) + '">' + escapeHtml(path || title) + '</span>' +
            '<span>' + escapeHtml(formatDate(new Date())) + ' 生成</span>' +
            '</div>');
-    h.push('<article id="content" class="markdown-body"></article>');
+    h.push('<main id="doc" class="markdown-body">' +
+           '<div id="fm-box"></div>' +                       // Front Matter（編集対象外）
+           '<article id="content"></article>' +              // 本文（プレビュー編集の対象）
+           '<div id="fn-box"></div>' +                       // 脚注一覧（編集対象外）
+           '</main>');
     h.push('<div id="code-wrap" hidden><textarea id="code" spellcheck="false"></textarea></div>');
-    h.push('<script src="' + escapeHtml(toUrl(CONFIG.markedJs)) + '"></script>');
-    h.push('<script src="' + escapeHtml(toUrl(CONFIG.turndownJs)) + '"></script>');
-    if (CONFIG.katexJs) {
-        h.push('<script src="' + escapeHtml(toUrl(CONFIG.katexJs)) + '"></script>');
+    var libsToLoad = [CONFIG.markedJs, CONFIG.turndownJs, CONFIG.katexJs];
+    for (var i = 0; i < libsToLoad.length; i++) {
+        if (libsToLoad[i]) { h.push('<script src="' + escapeHtml(toUrl(libsToLoad[i])) + '"></script>'); }
     }
     h.push('<script>');
     h.push('(' + String(browserMain) + ')(' + toJs(opt) + ');');
@@ -183,7 +193,10 @@ function buildHtml(md, eol, title, path, baseHref) {
 //     （アロー関数・let/const・正規表現の u フラグや後読みのリテラルは不可）
 // -----------------------------------------------------------------------------
 function browserMain(opt) {
+    var docEl = document.getElementById("doc");
     var out = document.getElementById("content");
+    var fmBox = document.getElementById("fm-box");
+    var fnBox = document.getElementById("fn-box");
     var codeWrap = document.getElementById("code-wrap");
     var code = document.getElementById("code");
     var btnPreview = document.getElementById("btn-preview");
@@ -203,8 +216,10 @@ function browserMain(opt) {
     var blocks = [];           // プレビューの各ブロック { raw, dirty, count }
     var fmRaw = "", lead = "", srcTail = "";
     var used = {};
-    var slugTmp = document.createElement("div");
-    var tmp = document.createElement("div");
+    // HTML の組み立ては表示されない別文書で行う（画像の読込やイベント属性が実行されない）
+    var inertDoc = document.implementation.createHTMLDocument("");
+    var slugTmp = inertDoc.createElement("div");
+    var tmp = inertDoc.createElement("div");
     var libs = {};
     var cssAdded = false;
     var mermaidReady = false;
@@ -255,6 +270,25 @@ function browserMain(opt) {
         }
     }
 
+    // Markdown 内の生 HTML から、スクリプトやイベント属性など危険なものを除く
+    var BAD_TAGS = "script,iframe,object,embed,frame,frameset,base,meta,link";
+    var URL_ATTR = /^(href|src|xlink:href|action|formaction|srcdoc)$/;
+    function sanitize(root) {
+        var bad = root.querySelectorAll(BAD_TAGS), i, k;
+        for (i = 0; i < bad.length; i++) { bad[i].parentNode.removeChild(bad[i]); }
+        var all = root.querySelectorAll("*");
+        for (i = 0; i < all.length; i++) {
+            var at = all[i].attributes;
+            for (k = at.length - 1; k >= 0; k--) {
+                var name = at[k].name.toLowerCase();
+                if (name.indexOf("on") === 0 ||
+                    (URL_ATTR.test(name) && /^\s*(javascript|vbscript|data:text\/html)/i.test(at[k].value))) {
+                    all[i].removeAttribute(at[k].name);
+                }
+            }
+        }
+    }
+
     // ---- GitHub 風の見出し id ------------------------------------------------
     function slugify(html) {
         slugTmp.innerHTML = html;
@@ -289,6 +323,20 @@ function browserMain(opt) {
         function titlePart(n) {
             var t = n.getAttribute("title");
             return t ? ' "' + t.replace(/"/g, '\\"') + '"' : "";
+        }
+        // リンク文字の中で対応の取れない ] だけをエスケープ（画像などの記法は残す）
+        function escUnbalanced(t) {
+            var out = "", depth = 0;
+            for (var i = 0; i < t.length; i++) {
+                var ch = t.charAt(i);
+                if (ch === "\\") { out += ch + t.charAt(i + 1); i++; continue; }
+                if (ch === "[") { depth++; }
+                else if (ch === "]") {
+                    if (depth > 0) { depth--; } else { out += "\\]"; continue; }
+                }
+                out += ch;
+            }
+            return out;
         }
         function cellMd(cell) {
             return s.turndown(cell.innerHTML).replace(/\n+/g, "<br>")
@@ -334,7 +382,10 @@ function browserMain(opt) {
             filter: function (n) { return n.nodeType === 1 && n.hasAttribute("data-tex"); },
             replacement: function (c, n) {
                 var tex = n.getAttribute("data-tex");
+                var d = n.getAttribute("data-delim");
                 if (n.nodeName === "DIV") { return "\n\n$$\n" + tex + "\n$$\n\n"; }
+                if (d === "paren") { return "\\(" + tex + "\\)"; }
+                if (d === "bracket") { return "\n\\[\n" + tex + "\n\\]\n"; }
                 return n.hasAttribute("data-display") ? "$$" + tex + "$$" : "$" + tex + "$";
             }
         });
@@ -364,7 +415,7 @@ function browserMain(opt) {
                 if (!n.getAttribute("title") && (text === href || text === raw) && /^(https?:|mailto:)/i.test(href)) {
                     return href; // 自動リンク
                 }
-                return "[" + content + "](" + href + titlePart(n) + ")";
+                return "[" + escUnbalanced(content) + "](" + href + titlePart(n) + ")";
             }
         });
         s.addRule("image", {
@@ -418,7 +469,7 @@ function browserMain(opt) {
             })
             .replace(US_RE, "$1\\_")
             .replace(/`/g, "\\`")
-            .replace(/[\[\]]/g, "\\$&")
+            .replace(/\[/g, "\\[")
             .replace(/~~/g, "\\~\\~")
             .replace(/<(?=[A-Za-z\/!?])/g, "\\<")
             .replace(/&(?=#?\w+;)/g, "\\&")
@@ -435,34 +486,41 @@ function browserMain(opt) {
 
     // ---- 数式（KaTeX → MathML。CSS やフォントは不要） ---------------------------
     var MATH_BLOCK = /^ {0,3}\$\$([\s\S]+?)\$\$[ \t]*(?:\n+|$)/;
+    var MATH_BLOCK_BR = /^ {0,3}\\\[([\s\S]+?)\\\][ \t]*(?:\n+|$)/;          // \[ ... \]
     var MATH_INLINE_D = /^\$\$((?:\\[\s\S]|[^\\$])+?)\$\$/;
+    var MATH_INLINE_BR = /^\\\[((?:\\[\s\S]|[^\\])+?)\\\][ \t]*(?=\n|$)/;     // 段落内の行頭から始まる \[ ... \]
+    var MATH_INLINE_P = /^\\\(((?:\\[\s\S]|[^\\])+?)\\\)/;                    // \( ... \)
     var MATH_INLINE = null;
     try {
         MATH_INLINE = new RegExp("^\\$(?![\\s$])((?:\\\\[\\s\\S]|[^\\\\$\\n])+?)(?<!\\s)\\$(?![0-9])");
     } catch (e) {
         MATH_INLINE = /^\$(?![\s$])((?:\\[\s\S]|[^\\$\n])*?[^\s\\$])\$(?![0-9])/;
     }
+    var mathCss = false; // KaTeX の CSS が読めていれば HTML 出力（揃え位置などが正確）
     function trim(s) { return String(s).replace(/^\s+|\s+$/g, ""); }
-    function mathHtml(tex, display, inline) {
+    function mathHtml(tex, display, inline, delim) {
         var tag = inline ? "span" : "div";
         var html;
         try {
-            html = window.katex.renderToString(tex, { displayMode: !!display, throwOnError: false, output: "mathml" });
+            html = window.katex.renderToString(tex, {
+                displayMode: !!display, throwOnError: false, output: mathCss ? "htmlAndMathml" : "mathml"
+            });
         } catch (e) {
             html = "<code>" + esc(tex) + "</code>";
         }
         return "<" + tag + ' class="math' + (inline ? "" : " math-block") + '" contenteditable="false" data-tex="' + esc(tex) + '"' +
-               (inline && display ? ' data-display=""' : "") + ">" + html + "</" + tag + ">" + (inline ? "" : "\n");
+               (inline && display ? ' data-display=""' : "") + (delim ? ' data-delim="' + delim + '"' : "") + ">" +
+               html + "</" + tag + ">" + (inline ? "" : "\n");
     }
     var mathExtensions = [{
         name: "mathBlock",
         level: "block",
         start: function (src) {
-            var m = /(^|\n) {0,3}\$\$/.exec(src);
-            if (m) { return m.index + m[1].length; }
+            var m = /\n {0,3}(\$\$|\\\[)/.exec(src); // 段落を途中で切る位置（行頭のみ）
+            if (m) { return m.index + 1; }
         },
         tokenizer: function (src) {
-            var m = MATH_BLOCK.exec(src);
+            var m = MATH_BLOCK.exec(src) || MATH_BLOCK_BR.exec(src);
             if (m) { return { type: "mathBlock", raw: m[0], text: trim(m[1]) }; }
         },
         renderer: function (t) { return mathHtml(t.text, true, false); }
@@ -470,16 +528,26 @@ function browserMain(opt) {
         name: "mathInline",
         level: "inline",
         start: function (src) {
-            var k = src.indexOf("$");
+            var c = [src.indexOf("$"), src.indexOf("\\("), src.indexOf("\\[")], k = -1;
+            for (var i = 0; i < c.length; i++) {
+                if (c[i] >= 0 && (k < 0 || c[i] < k)) { k = c[i]; }
+            }
             if (k >= 0) { return k; }
         },
-        tokenizer: function (src) {
+        tokenizer: function (src, tokens) {
             var m = MATH_INLINE_D.exec(src);
             if (m) { return { type: "mathInline", raw: m[0], text: trim(m[1]), display: true }; }
+            m = MATH_INLINE_P.exec(src);
+            if (m) { return { type: "mathInline", raw: m[0], text: trim(m[1]), display: false, delim: "paren" }; }
+            m = MATH_INLINE_BR.exec(src);
+            if (m && (!tokens || !tokens.length || /\n$/.test(tokens[tokens.length - 1].raw))) {
+                // 行頭の \[ のみ数式扱い（文中の \[ は通常の角かっこのエスケープ）
+                return { type: "mathInline", raw: m[0], text: trim(m[1]), display: true, delim: "bracket" };
+            }
             m = MATH_INLINE.exec(src);
             if (m) { return { type: "mathInline", raw: m[0], text: m[1], display: false }; }
         },
-        renderer: function (t) { return mathHtml(t.text, t.display, true); }
+        renderer: function (t) { return mathHtml(t.text, t.display, true, t.delim); }
     }];
 
     // ---- <details> など、HTML ブロックで開いたタグが閉じるまでを 1 ブロックにまとめる --
@@ -499,8 +567,8 @@ function browserMain(opt) {
         name: "footnoteDef",
         level: "block",
         start: function (src) {
-            var m = /(^|\n)\[\^[^\]\s]+\]:/.exec(src);
-            if (m) { return m.index + m[1].length; }
+            var m = /\n\[\^[^\]\s]+\]:/.exec(src); // 段落を途中で切る位置（行頭のみ）
+            if (m) { return m.index + 1; }
         },
         tokenizer: function (src) {
             var m = FN_DEF.exec(src);
@@ -520,7 +588,7 @@ function browserMain(opt) {
                 }
                 if (/^( {2,}|\t)/.test(ln)) {
                     body.push(ln.replace(/^( {1,4}|\t)/, ""));
-                } else if (FN_DEF.test(ln) || /^(#{1,6}[ \t]|>|[-*+][ \t]|\d+[.)][ \t]|```|~~~|<)/.test(ln)) {
+                } else if (FN_DEF.test(ln) || /^(#{1,6}[ \t]|>|[-*+][ \t]|\d+[.)][ \t]|```|~~~|<|\$\$|\\\[)/.test(ln)) {
                     break;
                 } else {
                     body.push(ln); // 遅延継続行
@@ -583,12 +651,40 @@ function browserMain(opt) {
             inner = at >= 0 ? inner.slice(0, at) + back + inner.slice(at) : inner + back;
             html += '<li id="fn-' + n + '">' + inner + "</li>";
         }
-        var sec = document.createElement("section");
+        var sec = inertDoc.createElement("section");
         sec.className = "footnotes";
         sec.setAttribute("data-gen", "");
         sec.setAttribute("contenteditable", "false");
         sec.innerHTML = html + "</ol>";
-        out.appendChild(sec);
+        sanitize(sec);
+        fnBox.appendChild(sec);
+    }
+
+    // 表示されない定義（脚注・リンク定義）の原文を集める（編集で失われないように）
+    function hiddenRaw(list) {
+        var r = "";
+        for (var i = 0; i < list.length; i++) {
+            var t = list[i];
+            if (t.type === "footnoteDef" || t.type === "def") { r += t.raw.replace(/\n*$/, "\n"); continue; }
+            if (t.tokens) { r += hiddenRaw(t.tokens); }
+            if (t.items) { r += hiddenRaw(t.items); }
+        }
+        return r;
+    }
+    // ブロックごとの表示 HTML（編集後に元へ戻したかの判定用）
+    function groupHtml() {
+        var map = {}, kids = out.children;
+        for (var i = 0; i < kids.length; i++) {
+            var id = blockId(kids[i]);
+            if (id !== null) { map[id] = (map[id] || "") + kids[i].outerHTML; }
+        }
+        return map;
+    }
+    function snapshot() {
+        var map = groupHtml();
+        for (var i = 0; i < blocks.length; i++) {
+            if (!blocks[i].dirty) { blocks[i].snap = map[i] || ""; }
+        }
     }
 
     // ---- Markdown → プレビュー ------------------------------------------------
@@ -600,6 +696,8 @@ function browserMain(opt) {
         lead = "";
         srcTail = (/\n*$/.exec(md) || [""])[0];
         out.innerHTML = "";
+        fmBox.innerHTML = "";
+        fnBox.innerHTML = "";
 
         var body = md;
         var fm = FM_RE.exec(md);
@@ -614,7 +712,7 @@ function browserMain(opt) {
             var p = document.createElement("pre");
             p.textContent = fm[1];
             d.appendChild(p);
-            out.appendChild(d);
+            fmBox.appendChild(d);
         }
 
         // トップレベルのブロックごとに描画し、元の Markdown（raw）と対応付ける
@@ -635,18 +733,25 @@ function browserMain(opt) {
             var group = [t];
             var raw = t.raw;
             var depth = t.type === "html" ? tagBalance(t.raw) : 0;
-            i++;
-            while (depth > 0 && i < tokens.length) {
-                group.push(tokens[i]);
-                raw += tokens[i].raw;
-                if (tokens[i].type === "html") { depth += tagBalance(tokens[i].raw); }
-                i++;
+            if (depth > 0) {
+                // 閉じタグが見つかるまでを 1 ブロックに（見つからなければまとめない）
+                var e = i + 1, dd = depth;
+                while (dd > 0 && e < tokens.length) {
+                    if (tokens[e].type === "html") { dd += tagBalance(tokens[e].raw); }
+                    e++;
+                }
+                if (dd <= 0) {
+                    for (var g = i + 1; g < e; g++) { group.push(tokens[g]); raw += tokens[g].raw; }
+                    i = e - 1;
+                }
             }
+            i++;
             var id = blocks.length;
-            var b = { raw: raw, dirty: false, count: 0 };
+            var b = { raw: raw, dirty: false, count: 0, snap: "", hidden: "" };
             blocks.push(b);
 
             tmp.innerHTML = marked.parser(group);
+            sanitize(tmp);
             var nodes = [], hasText = false, j, n;
             for (j = 0; j < tmp.childNodes.length; j++) {
                 n = tmp.childNodes[j];
@@ -659,12 +764,18 @@ function browserMain(opt) {
                 nodes = [w];
             }
             if (!nodes.length) {
-                // リンク定義・HTML コメントなど表示されないブロック
-                var hid = document.createElement("div");
-                hid.className = "md-hidden";
-                hid.setAttribute("contenteditable", "false");
-                nodes = [hid];
+                // リンク定義・脚注定義・HTML コメントなど表示されないブロックは、画面に要素を置かず
+                // 直前のブロックの原文に含める（文末に見えない要素があると全選択が効かなくなるため）
+                blocks.pop();
+                if (blocks.length) {
+                    blocks[blocks.length - 1].raw += raw;
+                    blocks[blocks.length - 1].hidden += raw.replace(/\n*$/, "\n");
+                } else {
+                    lead += raw;
+                }
+                continue;
             }
+            b.hidden = hiddenRaw(group);
             for (j = 0; j < nodes.length; j++) {
                 nodes[j].setAttribute("data-md", String(id));
                 out.appendChild(nodes[j]);
@@ -682,6 +793,7 @@ function browserMain(opt) {
             for (var k = 0; k < cbs.length; k++) { cbs[k].removeAttribute("disabled"); }
         }
         previewDirty = false;
+        snapshot();
         decorate();
         if (observer) { observer.observe(out, OBS); }
     }
@@ -695,6 +807,7 @@ function browserMain(opt) {
                     try { window.hljs.highlightElement(codes[i]); } catch (e) { }
                 }
                 if (observer) { observer.takeRecords(); } // 色付けは編集として扱わない
+                snapshot();
             });
         }
         var diagrams = out.querySelectorAll("pre.mermaid");
@@ -714,12 +827,18 @@ function browserMain(opt) {
     function blockId(el) {
         return (el.nodeType === 1 && el.hasAttribute("data-md")) ? el.getAttribute("data-md") : null;
     }
+    var KEEP_EMPTY = "img,hr,input,table,video,audio,svg,math,.math,pre,iframe";
+    function isEmptyBlock(el) {
+        return !/\S/.test(el.textContent || "") && !(el.matches(KEEP_EMPTY) || el.querySelector(KEEP_EMPTY));
+    }
     function previewToMarkdown() {
         var kids = out.childNodes, present = {}, i, el, id;
         for (i = 0; i < kids.length; i++) {
             id = blockId(kids[i]);
             if (id !== null) { present[id] = (present[id] || 0) + 1; }
         }
+        var html = groupHtml();
+        var done = {};        // 原文または定義を出力済みのブロック
         var res = fmRaw + lead;
         var head = res;
         var lastRawId = -1;   // 直前に原文のまま出力したブロック
@@ -733,13 +852,16 @@ function browserMain(opt) {
             }
             if (!/\n\n$/.test(res)) { res += /\n$/.test(res) ? "\n" : "\n\n"; }
         }
-        function emitConverted(html) {
-            var m = td.turndown(html).replace(/^\n+|\n+$/g, "");
-            if (!m) { return; }
+        function emitText(m) {
+            m = m.replace(/^\n+|\n+$/g, "");
+            if (!/\S/.test(m)) { return; }
             sep();
             res += m + "\n\n";
             lastWasRaw = false;
             lastRawId = -1;
+        }
+        function emitConverted(h) {
+            emitText(td.turndown(h));
         }
         function flushInline() {
             if (/\S/.test(inline)) { emitConverted("<p>" + inline + "</p>"); }
@@ -755,17 +877,31 @@ function browserMain(opt) {
             flushInline();
 
             var b = id !== null ? blocks[+id] : null;
-            if (b && (/(^|\s)md-hidden(\s|$)/.test(el.className) || (!b.dirty && present[id] === b.count))) {
+            var intact = b && present[id] === b.count && (!b.dirty || html[id] === b.snap);
+            if (intact) {
                 if (lastRawId === +id) { continue; }           // 同じブロックの 2 要素目以降
                 if (!(lastWasRaw && lastRawId === +id - 1)) { sep(); }
                 res += b.raw;
+                done[id] = true;
                 lastRawId = +id;
                 lastWasRaw = true;
             } else {
-                emitConverted(el.outerHTML);
+                if (!isEmptyBlock(el)) { emitConverted(el.outerHTML); }
+                if (b && b.hidden && !done[id]) {
+                    // 定義はブロック末尾の元の改行ごと出力し、後続ブロックとの間隔を保つ
+                    sep();
+                    res += b.hidden.replace(/\n+$/, "") + (/\n+$/.exec(b.raw) || ["\n"])[0];
+                    done[id] = true;
+                    lastRawId = +id;
+                    lastWasRaw = true;
+                }
             }
         }
         flushInline();
+        // 表示ブロックごと消された場合も、脚注・リンクの定義は残す
+        for (i = 0; i < blocks.length; i++) {
+            if (blocks[i].hidden && !done[i]) { emitText(blocks[i].hidden); }
+        }
         if (!lastWasRaw) {
             res = res.replace(/\n+$/, "") + srcTail;
         }
@@ -815,7 +951,7 @@ function browserMain(opt) {
         if (m === "code") {
             ratio = de.scrollHeight > window.innerHeight ? window.scrollY / (de.scrollHeight - window.innerHeight) : 0;
             code.value = getMarkdown();
-            out.hidden = true;
+            docEl.hidden = true;
             codeWrap.hidden = false;
             mode = "code";
             code.scrollTop = ratio * (code.scrollHeight - code.clientHeight);
@@ -827,7 +963,7 @@ function browserMain(opt) {
                 render(current);
             }
             codeWrap.hidden = true;
-            out.hidden = false;
+            docEl.hidden = false;
             mode = "preview";
             window.scrollTo(0, ratio * (de.scrollHeight - window.innerHeight));
         }
@@ -881,6 +1017,28 @@ function browserMain(opt) {
         }
     });
 
+    // Ctrl+A: 先頭・末尾に図や数式（編集不可の部分）があると Chrome の全選択が空振りするため自前で選択
+    out.addEventListener("keydown", function (e) {
+        if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || String(e.key).toLowerCase() !== "a") { return; }
+        if (!out.isContentEditable) { return; }
+        // 編集できる最初と最後のブロックの間を選択（端の図・数式は選択に含めない）
+        var kids = out.childNodes, first = null, last = null;
+        for (var i = 0; i < kids.length; i++) {
+            if (kids[i].nodeType === 3 || (kids[i].nodeType === 1 && kids[i].isContentEditable)) {
+                if (!first) { first = kids[i]; }
+                last = kids[i];
+            }
+        }
+        if (!first) { return; }
+        e.preventDefault();
+        var r = document.createRange();
+        r.setStart(first, 0);
+        r.setEnd(last, last.nodeType === 3 ? last.nodeValue.length : last.childNodes.length);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
+    });
+
     // 貼り付けは書式なしテキストとして
     out.addEventListener("paste", function (e) {
         if (!out.isContentEditable || !e.clipboardData) { return; }
@@ -889,7 +1047,7 @@ function browserMain(opt) {
     });
 
     // リンク: 編集中は Ctrl+クリックで開く。<base> を付けているため #... はスクリプトでスクロール
-    out.addEventListener("click", function (e) {
+    docEl.addEventListener("click", function (e) {
         var a = (e.target && e.target.closest) ? e.target.closest("a[href]") : null;
         if (!a) { return; }
         var editable = a.isContentEditable; // 脚注番号など編集不可の部分は普通のクリックで移動
@@ -901,8 +1059,8 @@ function browserMain(opt) {
             var el = id ? document.getElementById(id) : document.body;
             e.preventDefault();
             if (el) { el.scrollIntoView(); }
-        } else if (editable) {
-            e.preventDefault();
+        } else {
+            e.preventDefault();               // プレビューのタブは残したまま新しいタブで開く
             window.open(a.href, "_blank");
         }
     });
@@ -941,7 +1099,17 @@ function browserMain(opt) {
         marked.use({ extensions: footnoteExtensions });
         if (opt.math) {
             marked.use({ extensions: mathExtensions });
-            if (!window.katex) { warn("katex.min.js を読み込めませんでした（数式は TeX のまま表示）"); }
+            if (!window.katex) {
+                warn("katex.min.js を読み込めませんでした（数式は TeX のまま表示）");
+            } else if (opt.katexCss) {
+                var probe = document.createElement("span");
+                probe.className = "katex";
+                probe.innerHTML = '<span class="katex-mathml"></span>';
+                document.body.appendChild(probe);
+                mathCss = window.getComputedStyle(probe.firstChild).position === "absolute";
+                document.body.removeChild(probe);
+                if (!mathCss) { warn("katex.min.css を読み込めなかったため、簡易表示（MathML）にしています"); }
+            }
         }
         if (td) {
             out.setAttribute("contenteditable", "true");
@@ -1004,7 +1172,6 @@ body {
 #msg.dirty { color: var(--attn); }
 #msg.ok { color: var(--ok); }
 .warn { color: var(--warn) !important; }
-.md-hidden { display: none !important; }
 [hidden] { display: none !important; }
 #content { outline: none; caret-color: var(--link); }
 #code-wrap { max-width: 980px; margin: 0 auto; padding: 16px 40px; box-sizing: border-box; }
@@ -1020,7 +1187,9 @@ body {
   max-width: 980px; margin: 0 auto; padding: 32px 40px 96px;
   box-sizing: border-box; overflow-wrap: break-word;
 }
-.markdown-body > :first-child { margin-top: 0 !important; }
+#doc > div:empty { display: none; }
+#content > :first-child, #fm-box + #content > :first-child { margin-top: 0 !important; }
+.front-matter { margin-bottom: 16px; }
 .markdown-body [id] { scroll-margin-top: 48px; }
 .markdown-body h1, .markdown-body h2, .markdown-body h3,
 .markdown-body h4, .markdown-body h5, .markdown-body h6 {
