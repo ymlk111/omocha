@@ -4,7 +4,7 @@ run.bat をダブルクリックしてください。
 
 または PowerShell から以下を実行します。
 
-powershell -ExecutionPolicy Bypass -File .\main.ps1
+powershell -ExecutionPolicy Bypass -File .\screenshot.ps1
 
 ・基本操作
 スクリーンショット撮影
