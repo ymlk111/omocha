@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     CloudWatch Logs をキーワードで検索し、結果を CSV に出力します（画面あり・なしの両対応）。
 
